@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Gift Video</title>
+  <meta name="description" content="Видео из коллекционного подарка Telegram по ссылке t.me/nft">
+  <meta name="theme-color" content="#0e1013">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎁</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/lottie-web@5.12.2/build/player/lottie_canvas.min.js"></script>
+</head>
+<body>
+  <main class="wrap">
+    <header class="head">
+      <h1>Gift Video</h1>
+      <p>Вставь ссылку на подарок — получишь видео карточки, как в Telegram.</p>
+    </header>
+
+    <form id="form" class="search" autocomplete="off">
+      <input id="link" type="text" inputmode="url" spellcheck="false"
+             placeholder="https://t.me/nft/MoneyPot-56380" aria-label="Ссылка на подарок">
+      <button id="load" type="submit">Загрузить</button>
+    </form>
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+
+    <section id="studio" class="studio" hidden>
+      <div class="stage">
+        <canvas id="preview" aria-label="Превью карточки"></canvas>
+      </div>
+
+      <dl id="facts" class="facts"></dl>
+
+      <div class="controls">
+        <div class="row">
+          <span class="label">Плашка</span>
+          <div class="seg" id="rarity" role="radiogroup" aria-label="Какая редкость в плашке">
+            <button type="button" data-v="model" aria-pressed="true">Модель</button>
+            <button type="button" data-v="backdrop">Фон</button>
+            <button type="button" data-v="symbol">Символ</button>
+            <button type="button" data-v="none">Без</button>
+          </div>
+        </div>
+        <div class="row">
+          <span class="label">Размер</span>
+          <div class="seg" id="size" role="radiogroup" aria-label="Размер видео">
+            <button type="button" data-v="1920" aria-pressed="true">1920×1280</button>
+            <button type="button" data-v="1080">1080×720</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <button type="button" class="act primary" data-kind="mp4">
+          <b>MP4 цикл</b><small>3 сек · в Telegram крутится бесконечно</small>
+        </button>
+        <button type="button" class="act" data-kind="mp4long">
+          <b>MP4 30 сек</b><small>цикл повторён 10 раз</small>
+        </button>
+        <button type="button" class="act" data-kind="gif">
+          <b>GIF</b><small>960×640 · бесконечный</small>
+        </button>
+        <button type="button" class="act" data-kind="png">
+          <b>PNG</b><small>картинка</small>
+        </button>
+      </div>
+
+      <div id="progress" class="progress" hidden>
+        <div class="bar"><i id="bar"></i></div>
+        <span id="ptext">0%</span>
+        <button type="button" id="cancel" class="link">Отмена</button>
+      </div>
+
+      <div id="result" class="result" hidden>
+        <div id="media"></div>
+        <a id="download" class="download" download>Скачать</a>
+      </div>
+    </section>
+
+    <footer class="foot">
+      Рендер идёт прямо в браузере. Данные подарка берутся со страницы t.me/nft.
+    </footer>
+  </main>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
