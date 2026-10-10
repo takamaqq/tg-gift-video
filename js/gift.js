@@ -1,5 +1,6 @@
 // Fetching and parsing a collectible gift page (https://t.me/nft/<slug>).
 import { PROXY_URL } from '../config.js';
+import { normalizeGradients } from './lottie-fix.js';
 
 const XLINK = 'http://www.w3.org/1999/xlink';
 
@@ -14,31 +15,60 @@ export function parseSlug(input) {
   return m ? m[1] : null;
 }
 
-function proxyCandidates(slug) {
+const isLocal = () => location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+// AbortSignal.timeout is missing in Safari < 16.
+const timeout = (ms) => (AbortSignal.timeout ? AbortSignal.timeout(ms) : undefined);
+
+// Our own proxies answer 404 for a missing gift and 503 when t.me served its generic page
+// (t.me does that both for unknown gifts and when it rate-limits).
+function ownProxies(slug) {
   const list = [];
-  const host = location.hostname;
-  if (host === 'localhost' || host === '127.0.0.1') list.push(`/proxy?slug=${slug}`);
+  if (isLocal()) list.push(`/proxy?slug=${slug}`);
   if (PROXY_URL) list.push(`${PROXY_URL.replace(/\/+$/, '')}/?slug=${slug}`);
-  // Public fallbacks: flaky, used only if the own worker is missing or down.
-  const target = encodeURIComponent(`https://t.me/nft/${slug}`);
-  list.push(`https://api.allorigins.win/raw?url=${target}`);
-  list.push(`https://api.codetabs.com/v1/proxy?quest=${target}`);
   return list;
 }
 
+// Public fallbacks: flaky, used only if the own worker is missing or down.
+function publicProxies(slug) {
+  const target = encodeURIComponent(`https://t.me/nft/${slug}`);
+  return [
+    `https://api.allorigins.win/raw?url=${target}`,
+    `https://api.codetabs.com/v1/proxy?quest=${target}`,
+  ];
+}
+
 async function fetchGiftHtml(slug) {
-  let sawTelegramPage = false;
-  for (const url of proxyCandidates(slug)) {
-    try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
-      if (!r.ok) continue;
+  let busy = false;
+  for (const url of ownProxies(slug)) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let r;
+      try { r = await fetch(url, { signal: timeout(15000) }); } catch { break; }
+      if (r.status === 404) throw new GiftError('NOT_FOUND', 'Подарок не найден. Проверь ссылку — нужен улучшенный (NFT) подарок.');
+      if (r.ok) {
+        const html = await r.text();
+        if (html.includes('giftGradient')) return html;
+      }
+      if (!r.ok && r.status !== 503) break;
+      busy = true;
+      if (attempt === 0) await sleep(4000);
+    }
+  }
+
+  try {
+    return await Promise.any(publicProxies(slug).map(async (url) => {
+      const r = await fetch(url, { signal: timeout(8000) });
+      if (!r.ok) throw new Error(String(r.status));
       const html = await r.text();
       if (html.includes('giftGradient')) return html;
-      if (html.includes('tgme_page')) sawTelegramPage = true;
-    } catch { /* try next */ }
-  }
-  if (sawTelegramPage) throw new GiftError('NOT_FOUND', 'Подарок не найден. Проверь ссылку — нужен улучшенный (NFT) подарок.');
-  throw new GiftError('PROXY', 'Не получилось загрузить страницу подарка. Проверь PROXY_URL в config.js (см. README).');
+      if (html.includes('tgme_page')) busy = true;
+      throw new Error('no gift data');
+    }));
+  } catch { /* all fallbacks failed */ }
+
+  if (busy) throw new GiftError('BUSY', 'Telegram не отдал данные подарка: либо такого подарка нет, либо Telegram временно ограничил запросы. Проверь ссылку и попробуй через минуту.');
+  if (!PROXY_URL && !isLocal()) throw new GiftError('PROXY', 'Не получилось загрузить страницу подарка: не настроен прокси (PROXY_URL в config.js, см. README).');
+  throw new GiftError('PROXY', 'Не получилось связаться с Telegram. Попробуй ещё раз.');
 }
 
 function parseTranslate(t) {
@@ -119,6 +149,11 @@ async function loadTgs(url) {
   const buf = await (await fetch(url)).arrayBuffer();
   const head = new Uint8Array(buf, 0, 2);
   if (head[0] === 0x1f && head[1] === 0x8b) {
+    if (typeof DecompressionStream === 'undefined') {
+      // Safari < 16.4
+      const { gunzipSync } = await import('https://cdn.jsdelivr.net/npm/fflate@0.8.2/+esm');
+      return JSON.parse(new TextDecoder().decode(gunzipSync(new Uint8Array(buf))));
+    }
     const stream = new Blob([buf]).stream().pipeThrough(new DecompressionStream('gzip'));
     return JSON.parse(await new Response(stream).text());
   }
@@ -131,7 +166,7 @@ export async function loadGift(input) {
   const gift = parseGiftHtml(await fetchGiftHtml(slug), slug);
   const [symbolImg, lottieData] = await Promise.all([
     gift.symbolUrl ? loadImage(gift.symbolUrl).catch(() => null) : null,
-    loadTgs(gift.tgsUrl).catch(() => { throw new GiftError('TGS', 'Не удалось скачать анимацию подарка. Попробуй ещё раз.'); }),
+    loadTgs(gift.tgsUrl).then(normalizeGradients).catch(() => { throw new GiftError('TGS', 'Не удалось скачать анимацию подарка. Попробуй ещё раз.'); }),
   ]);
   return { gift, symbolImg, lottieData };
 }

@@ -39,6 +39,17 @@ function drawBackground(g, s, gift, symbolImg) {
   g.globalAlpha = 1;
 }
 
+// ctx.roundRect is missing in Safari < 16 and Firefox < 112.
+function roundRectPath(g, x, y, w, h, r) {
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+
 function rarityFor(gift, which) {
   if (which === 'none') return '';
   return (gift[which] && gift[which].rarity) || '';
@@ -71,8 +82,9 @@ function drawCaptions(g, s, gift, opts) {
   g.fillText(num, x + wName + wGap, titleBase);
   g.globalAlpha = 1;
 
-  // Subtitle: "Model · [rarity]".
-  const model = gift.model.name;
+  // Subtitle: "Name · [rarity]" — the name of whichever attribute the chip shows (model by default).
+  const attr = (opts.rarity !== 'none' && gift[opts.rarity]?.name) ? gift[opts.rarity] : gift.model;
+  const model = attr.name;
   const rarity = rarityFor(gift, opts.rarity);
   const midY = 244.5 * s;
   const gap = 7 * s;
@@ -105,8 +117,7 @@ function drawCaptions(g, s, gift, opts) {
     g.globalAlpha = 0.45;
     g.strokeStyle = '#fff';
     g.lineWidth = 1 * s;
-    g.beginPath();
-    g.roundRect(x + 0.5 * s, midY - chipH / 2 + 0.5 * s, chipW - s, chipH - s, chipH / 2);
+    roundRectPath(g, x + 0.5 * s, midY - chipH / 2 + 0.5 * s, chipW - s, chipH - s, (chipH - s) / 2);
     g.stroke();
     g.globalAlpha = 0.95;
     g.font = `600 ${11.5 * s}px ${FONT}`;
@@ -160,21 +171,23 @@ export class CardRenderer {
     ctx.drawImage(this.captions, 0, 0);
   }
 
-  // Most gift animations end where they start; if so, drop the duplicate last frame for a seamless loop.
+  // Most gift animations end exactly where they start; then the last frame duplicates frame 0
+  // and is dropped for a seamless loop. Compare against the normal last motion step so a real
+  // (moving) final frame is kept.
   loopFrames() {
     if (this._loopFrames) return this._loopFrames;
     const n = this.totalFrames;
+    if (n < 3) return (this._loopFrames = n);
     const probe = (f) => {
       this.drawGift(f);
-      const c = makeCanvas(48, 48);
+      const c = makeCanvas(64, 64);
       const g = c.getContext('2d', { willReadFrequently: true });
-      g.drawImage(this.giftCanvas, 0, 0, 48, 48);
-      return g.getImageData(0, 0, 48, 48).data;
+      g.drawImage(this.giftCanvas, 0, 0, 64, 64);
+      return g.getImageData(0, 0, 64, 64).data;
     };
-    const a = probe(0), b = probe(n - 1);
-    let diff = 0;
-    for (let i = 0; i < a.length; i++) diff += Math.abs(a[i] - b[i]);
-    this._loopFrames = diff / a.length < 1.5 ? n - 1 : n;
+    const diff = (x, y) => { let d = 0; for (let i = 0; i < x.length; i++) d += Math.abs(x[i] - y[i]); return d / x.length; };
+    const first = probe(0), last = probe(n - 1), prev = probe(n - 2);
+    this._loopFrames = diff(first, last) < 0.02 + 0.25 * diff(prev, last) ? n - 1 : n;
     return this._loopFrames;
   }
 

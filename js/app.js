@@ -9,7 +9,9 @@ const progress = $('progress'), bar = $('bar'), ptext = $('ptext'), cancelBtn = 
 const result = $('result'), media = $('media'), download = $('download');
 const actionBtns = [...document.querySelectorAll('.act')];
 
-const state = { assets: null, rarity: 'model', size: 1920, previewR: null, raf: 0, job: null, resultUrl: null };
+const settingBtns = [...document.querySelectorAll('#rarity button, #size button')];
+
+const state = { assets: null, rarity: 'model', size: 1920, previewR: null, raf: 0, job: null, resultUrl: null, loadSeq: 0 };
 
 function setStatus(text, isError = false) {
   statusEl.textContent = text;
@@ -63,16 +65,22 @@ function clearResult() {
   if (state.resultUrl) URL.revokeObjectURL(state.resultUrl);
   state.resultUrl = null;
   media.replaceChildren();
+  download.removeAttribute('href');
+  download.removeAttribute('download');
+  download.textContent = 'Скачать';
   result.hidden = true;
 }
 
 async function load(input) {
   const slug = parseSlug(input);
   if (!slug) { setStatus('Не похоже на ссылку подарка. Пример: https://t.me/nft/MoneyPot-56380', true); return; }
+  const seq = ++state.loadSeq;
   loadBtn.disabled = true;
   setStatus('Загружаю подарок…');
   try {
     const [assets] = await Promise.all([loadGift(slug), ensureFonts()]);
+    if (seq !== state.loadSeq) return; // a newer load started meanwhile
+    state.job?.abort();
     state.assets = assets;
     const { gift } = assets;
     clearResult();
@@ -83,18 +91,15 @@ async function load(input) {
     history.replaceState(null, '', `?gift=${encodeURIComponent(slug)}`);
     window.__gift = gift; // handy for debugging
   } catch (e) {
+    if (seq !== state.loadSeq) return;
     console.error(e);
     setStatus(e.message || 'Что-то пошло не так.', true);
   } finally {
-    loadBtn.disabled = false;
+    if (seq === state.loadSeq) loadBtn.disabled = false;
   }
 }
 
-function fileBase() {
-  return state.assets ? state.assets.gift.slug : 'gift';
-}
-
-function showResult(blob, kind) {
+function showResult(blob, kind, slug) {
   clearResult();
   const url = URL.createObjectURL(blob);
   state.resultUrl = url;
@@ -111,21 +116,22 @@ function showResult(blob, kind) {
   const ext = kind === 'gif' ? 'gif' : kind === 'png' ? 'png' : 'mp4';
   const suffix = kind === 'mp4' ? '-loop' : kind === 'mp4long' ? '-loop-30s' : kind === 'gif' ? '-loop' : '';
   download.href = url;
-  download.download = `${fileBase()}${suffix}.${ext}`;
+  download.download = `${slug}${suffix}.${ext}`;
   download.textContent = `Скачать ${ext.toUpperCase()} · ${(blob.size / 1048576).toFixed(1)} МБ`;
   result.hidden = false;
   window.__lastResult = { kind, blob };
 }
 
 async function make(kind) {
-  if (!state.assets || state.job) return;
+  const assets = state.assets;
+  if (!assets || state.job) return;
   if ((kind === 'mp4' || kind === 'mp4long') && !canEncodeMp4()) {
     setStatus('Этот браузер не умеет делать MP4. Открой в Chrome, Edge или Safari 17+, или скачай GIF.', true);
     return;
   }
   const ctrl = new AbortController();
   state.job = ctrl;
-  actionBtns.forEach(b => (b.disabled = true));
+  [...actionBtns, ...settingBtns].forEach(b => (b.disabled = true));
   progress.hidden = kind === 'png';
   bar.style.width = '0%'; ptext.textContent = '0%';
   const onProgress = (p) => { const v = Math.round(p * 100); bar.style.width = `${v}%`; ptext.textContent = `${v}%`; };
@@ -133,24 +139,32 @@ async function make(kind) {
   setStatus('Рендерю…');
   try {
     let blob;
-    if (kind === 'mp4') blob = await encodeMp4(state.assets, { ...common, width: state.size, repeats: 1 });
-    else if (kind === 'mp4long') blob = await encodeMp4(state.assets, { ...common, width: state.size, repeats: 10 });
-    else if (kind === 'gif') blob = await encodeGif(state.assets, { ...common, width: 960 });
-    else blob = await renderPng(state.assets, { width: state.size, rarity: state.rarity });
-    showResult(blob, kind);
+    if (kind === 'mp4') blob = await encodeMp4(assets, { ...common, width: state.size, repeats: 1 });
+    else if (kind === 'mp4long') blob = await encodeMp4(assets, { ...common, width: state.size, repeats: 10 });
+    else if (kind === 'gif') blob = await encodeGif(assets, { ...common, width: 960 });
+    else blob = await renderPng(assets, { width: state.size, rarity: state.rarity });
+    if (state.assets !== assets) return; // another gift was loaded meanwhile
+    showResult(blob, kind, assets.gift.slug);
     setStatus('Готово.');
   } catch (e) {
+    if (state.assets !== assets) return;
     if (e.name === 'AbortError') setStatus('Отменено.');
     else { console.error(e); setStatus(e.message || 'Не получилось отрендерить.', true); }
   } finally {
     state.job = null;
     progress.hidden = true;
-    actionBtns.forEach(b => (b.disabled = false));
+    [...actionBtns, ...settingBtns].forEach(b => (b.disabled = false));
   }
 }
 
 form.addEventListener('submit', (e) => { e.preventDefault(); load(linkInput.value); });
-linkInput.addEventListener('paste', () => setTimeout(() => { if (parseSlug(linkInput.value)) load(linkInput.value); }, 0));
+linkInput.addEventListener('paste', (e) => {
+  const text = (e.clipboardData?.getData('text') || '').trim();
+  if (!parseSlug(text)) return;
+  e.preventDefault();
+  linkInput.value = text;
+  load(text);
+});
 cancelBtn.addEventListener('click', () => state.job?.abort());
 actionBtns.forEach(b => b.addEventListener('click', () => make(b.dataset.kind)));
 bindSeg('rarity', 'rarity', () => { if (state.assets) { clearResult(); startPreview(); } });
@@ -159,8 +173,16 @@ bindSeg('size', 'size');
 let resizeTimer;
 addEventListener('resize', () => {
   clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => { if (state.assets) startPreview(); }, 200);
+  resizeTimer = setTimeout(() => {
+    if (!state.assets) return;
+    const w = Math.min(1260, Math.round((preview.clientWidth || 600) * Math.min(2, devicePixelRatio || 1)));
+    if (Math.abs(w - preview.width) > 2) startPreview(); // ignore height-only changes (mobile toolbars)
+  }, 200);
 });
 
 const initial = new URLSearchParams(location.search).get('gift');
-if (initial) { linkInput.value = `https://t.me/nft/${initial}`; load(initial); }
+if (initial) {
+  const slug = parseSlug(initial);
+  linkInput.value = slug ? `https://t.me/nft/${slug}` : initial;
+  load(initial);
+}

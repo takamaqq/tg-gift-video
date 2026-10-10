@@ -23,6 +23,7 @@ async function pickAvcConfig(width, height, fps, bitrate) {
 
 export async function encodeMp4(assets, { width = 1920, repeats = 1, rarity, captions, onProgress, signal } = {}) {
   const r = new CardRenderer(assets, width, { rarity, captions });
+  let encoder = null;
   try {
     const { width: W, height: H, fps } = r;
     const loop = r.loopFrames();
@@ -31,8 +32,19 @@ export async function encodeMp4(assets, { width = 1920, repeats = 1, rarity, cap
 
     const target = new ArrayBufferTarget();
     const muxer = new Muxer({ target, fastStart: 'in-memory', video: { codec: 'avc', width: W, height: H, frameRate: fps } });
-    let failure = null;
-    const encoder = new VideoEncoder({ output: (chunk, meta) => muxer.addVideoChunk(chunk, meta), error: e => { failure = e; } });
+    // The encoder's first keyframe comes out softer than the rest, which shows as a pulse at the loop
+    // seam. Warm it up on the last second of the loop (negative timestamps) and drop that output.
+    const warm = Math.min(loop, Math.round(fps));
+    let failure = null, firstMeta = null, started = false;
+    encoder = new VideoEncoder({
+      output: (chunk, meta) => {
+        if (meta?.decoderConfig && !firstMeta) firstMeta = meta;
+        if (chunk.timestamp < 0) return;
+        muxer.addVideoChunk(chunk, started ? meta : firstMeta);
+        started = true;
+      },
+      error: e => { failure = e; },
+    });
     encoder.configure(config);
 
     const canvas = document.createElement('canvas');
@@ -40,23 +52,23 @@ export async function encodeMp4(assets, { width = 1920, repeats = 1, rarity, cap
     const ctx = canvas.getContext('2d');
     const frameUs = 1e6 / fps;
 
-    for (let i = 0; i < total; i++) {
+    for (let i = -warm; i < total; i++) {
       if (signal?.aborted) throw new DOMException('aborted', 'AbortError');
       if (failure) throw failure;
-      r.drawFrame(ctx, i % loop);
+      r.drawFrame(ctx, ((i % loop) + loop) % loop);
       const frame = new VideoFrame(canvas, { timestamp: Math.round(i * frameUs), duration: Math.round(frameUs) });
-      encoder.encode(frame, { keyFrame: i % (fps * 2) === 0 });
+      encoder.encode(frame, { keyFrame: i === -warm || (i >= 0 && i % (fps * 2) === 0) });
       frame.close();
       while (encoder.encodeQueueSize > 4) await new Promise(res => setTimeout(res, 1));
-      if (i % 6 === 0) { onProgress?.(i / total); await nextTick(); }
+      if (i % 6 === 0) { onProgress?.(Math.max(0, i) / total); await nextTick(); }
     }
     await encoder.flush();
     if (failure) throw failure;
-    encoder.close();
     muxer.finalize();
     onProgress?.(1);
     return new Blob([target.buffer], { type: 'video/mp4' });
   } finally {
+    if (encoder && encoder.state !== 'closed') encoder.close();
     r.destroy();
   }
 }
